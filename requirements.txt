@@ -1,14 +1,6 @@
-# Official MCP Server requirements
-mcp>=1.0.0
-starlette>=0.28.0
-uvicorn[standard]==0.24.0
-anyio>=4.0.0
-click>=8.0.0
-
-# LangGraph Client requirements
-langgraph>=0.0.62
-langchain-core>=0.1.52
-aiohttp>=3.9.1
-
-# Common requirements
-pydantic>=2.5.0
+langgraph
+langchain-core
+langchain-openai
+langchain_mcp_adapters
+python-dotenv
+fastmcp

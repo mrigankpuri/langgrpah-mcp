@@ -1,0 +1,16 @@
+{
+  "servers": {
+    "weather": {
+      "url": "http://localhost:8001/mcp",
+      "name": "Weather Server",
+      "description": "FastMCP weather server with streaming",
+      "model": "gpt-3.5-turbo"
+    },
+    "example": {
+      "url": "http://localhost:8002/mcp",
+      "name": "Example Server",
+      "description": "Another MCP server",
+      "model": "gpt-4"
+    }
+  }
+}
