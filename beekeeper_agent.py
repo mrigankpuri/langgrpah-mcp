@@ -1,8 +1,5 @@
 #!/usr/bin/env python
-"""
-🐝 Beekeeper Agent - LangGraph with Intent Detection Business Flow
-Restored original business flow: Intent Detection → Evidence Discovery OR Claim Generation → Tools
-"""
+
 import asyncio
 from fastmcp import Client
 from langchain_openai import ChatOpenAI
@@ -22,7 +19,6 @@ from langgraph.config import get_stream_writer
 
 load_dotenv()
 
-# Beekeeper State with intent detection and proper typing
 class BeekeeperState(TypedDict):
     messages: Annotated[list, add_messages]
     intent: Optional[Literal["evidence_discovery", "claim_generation", "clarification_needed"]]
@@ -69,9 +65,9 @@ async def get_mcp_client(server_key: str):
             except Exception as e:
                 print(f"⚠️ {server_key} cleanup error: {e}")
 
-# Intent Detection Node (handles initial queries AND post-tool responses)
-def intent_detection_node(state: BeekeeperState) -> dict:
-    """🎯 Intent Detection: Handle initial queries OR provide conversational responses after tools"""
+# Chat Node - Handle conversation and user responses
+def chat_node(state: BeekeeperState) -> dict:
+    """💬 Chat Node: Handle conversational responses and user interaction"""
     llm = ChatOpenAI(model=os.environ.get("OPENAI_MODEL", "gpt-4"))
     
     messages = state["messages"]
@@ -79,116 +75,144 @@ def intent_detection_node(state: BeekeeperState) -> dict:
     # Handle empty messages
     if not messages:
         return {
-            "intent": "evidence_discovery", 
-            "selected_server": "rag_server",
-            "messages": [AIMessage(content="Hello! I'm your Beekeeper assistant. I can help you find evidence or generate summaries. What would you like me to help you with?")]
+            "messages": [AIMessage(content="Hello! I'm your Boston Scientific marketing assistant. I can help you find evidence for existing claims or generate new marketing claims. What would you like me to help you with?")]
         }
     
-    # Use LLM to determine the conversation state and what to do next
-    conversation_analysis_prompt = SystemMessage(content="""You are analyzing a conversation to determine what action to take next. 
-
-Look at the conversation and determine:
-1. Is this an initial user query that needs to be processed?
-2. Has the user's query been answered with tool results that need a conversational response?
-3. Does the user need clarification?
-
-Respond in JSON format:
-{
-  "conversation_state": "initial_query" | "query_answered" | "needs_clarification",
-  "intent": "evidence_discovery" | "claim_generation" | "clarification_needed" (only for initial_query),
-  "response": "your conversational response"
-}
-
-For initial_query classification:
-- EVIDENCE_DISCOVERY: finding/searching/researching/analyzing existing information
-  Examples: "Find evidence about...", "Search for...", "Research...", "What are the...", "Show me data..."
-  
-- CLAIM_GENERATION: creating/generating/writing new content, claims, summaries, reports
-  Examples: "Generate claims about...", "Create a summary...", "Write a report...", "Make claims...", "Produce..."
-  
-For query_answered: If you see tool results (like search results or generated summaries), provide a conversational response about those results.
-
-For needs_clarification: If the request is vague or ambiguous, ask for clarification.""")
+    # Check if we have tool results to respond to
+    last_message = messages[-1] if messages else None
     
-    # Create conversation context for analysis
-    conversation_text = "\n".join([
-        f"{'User' if not isinstance(msg, AIMessage) else 'Assistant'}: {msg.content if hasattr(msg, 'content') else str(msg)}"
-        for msg in messages[-5:]  # Last 5 messages for context
-    ])
-    
-    analysis_messages = [
-        conversation_analysis_prompt,
-        HumanMessage(content=f"Analyze this conversation:\n{conversation_text}")
-    ]
-    
-    try:
-        # Get LLM analysis
-        response = llm.invoke(analysis_messages)
-        result = json.loads(response.content.strip())
+    # If last message is a tool result, provide conversational response
+    if isinstance(last_message, ToolMessage):
+        conversation_prompt = SystemMessage(content="""You are a helpful assistant for Boston Scientific's marketing team. 
         
-        conversation_state = result.get("conversation_state", "initial_query")
-        intent = result.get("intent")
-        conversational_response = result.get("response", "I'll help you with that!")
+You just received results from either:
+1. Evidence Discovery: Research results supporting marketing claims
+2. Marketing Claim Generation: New marketing content for products
+
+Provide a friendly, professional conversational response about the results. Be concise but helpful.
+Keep the response focused on how this helps their marketing efforts.""")
         
-        print(f"Conversation Analysis: {conversation_state}, intent: {intent}")
-        
-        # Handle based on conversation state
-        if conversation_state == "query_answered":
-            # Query has been answered, provide conversational response and end
+        try:
+            response = llm.invoke([
+                conversation_prompt,
+                HumanMessage(content=f"Tool result: {last_message.content}")
+            ])
+            
             return {
-                "messages": [AIMessage(content=conversational_response)],
+                "messages": [AIMessage(content=response.content)],
                 "conversation_complete": True
             }
             
-        elif conversation_state == "needs_clarification":
-            # Needs clarification, provide response and end
+        except Exception as e:
+            print(f"⚠️ Chat response error: {e}")
             return {
-                "intent": "clarification_needed",
-                "selected_server": None,
-                "messages": [AIMessage(content=conversational_response)]
+                "messages": [AIMessage(content="I've completed your request. Is there anything else I can help you with?")],
+                "conversation_complete": True
             }
-            
-        else:  # initial_query
-            # Initial query, classify intent and route to business logic
-            if intent == "claim_generation":
-                return {
-                    "intent": "claim_generation", 
-                    "selected_server": "summary_server",
-                    "messages": [AIMessage(content=conversational_response)]
-                }
-            else:
-                # Default to evidence_discovery
-                return {
-                    "intent": "evidence_discovery", 
-                    "selected_server": "rag_server",
-                    "messages": [AIMessage(content=conversational_response)]
-                }
-        
-    except Exception as e:
-        print(f"⚠️ LLM conversation analysis error: {e}")
-        # On error, provide default friendly response
-        last_message = messages[-1] if messages else None
-        user_query = last_message.content if last_message and hasattr(last_message, 'content') else "your request"
-        
-        clarification_message = f"""Hi there! I'd be happy to help you with: "{user_query}"
+    
+    # For initial queries, provide acknowledgment and route to intent detection
+    return {"messages": []}
 
-I specialize in two main areas:
-
-Finding Information - I can search for evidence, research data, analyze existing information
-Creating Content - I can generate summaries, write reports, create documentation
-
-Could you help me understand - are you looking for me to **find existing information** or **create new content** for you?"""
-
+# Intent Detection Node - Classify workflows
+def intent_detection_node(state: BeekeeperState) -> dict:
+    """🎯 Intent Detection: Classify evidence_discovery vs marketing_claim workflows"""
+    llm = ChatOpenAI(model=os.environ.get("OPENAI_MODEL", "gpt-4"))
+    
+    messages = state["messages"]
+    
+    # Handle empty messages
+    if not messages:
         return {
             "intent": "clarification_needed",
-            "selected_server": None,
-            "messages": [AIMessage(content=clarification_message)]
+            "messages": [AIMessage(content="Hello! I'm your Boston Scientific marketing assistant. How can I help you today?")]
+        }
+    
+    # Get the user's query from the most recent human message
+    user_query = None
+    for msg in reversed(messages):
+        if isinstance(msg, HumanMessage):
+            user_query = msg.content
+            break
+    
+    if not user_query:
+        return {
+            "intent": "clarification_needed",
+            "messages": [AIMessage(content="I'd be happy to help! Could you please tell me what you need assistance with?")]
+        }
+    
+    # LLM-based intent classification
+    intent_prompt = SystemMessage(content="""You are analyzing queries for Boston Scientific's marketing team to classify into two workflows:
+
+1. EVIDENCE_DISCOVERY: Finding evidence to support existing marketing claims, regulatory requirements, or competitive analysis
+   - Keywords: find, search, evidence, support, validate, verify, research, data, studies, prove, back up
+   - Examples: "Find evidence for our pacemaker safety claims", "Research competitor analysis for stents"
+
+2. CLAIM_GENERATION: Generating new marketing content, claims, or promotional materials  
+   - Keywords: generate, create, write, develop, make, produce, build, craft, compose, draft
+   - Examples: "Generate marketing claims for new cardiac device", "Create promotional content for our latest stent"
+
+Respond in JSON format:
+{
+  "intent": "evidence_discovery" | "claim_generation" | "clarification_needed",
+  "confidence": 0.0-1.0,
+  "reasoning": "brief explanation"
+}
+
+If the query is unclear or could be either, use "clarification_needed".""")
+    
+    try:
+        response = llm.invoke([
+            intent_prompt,
+            HumanMessage(content=f"Classify this Boston Scientific marketing query: {user_query}")
+        ])
+        
+        result = json.loads(response.content.strip())
+        intent = result.get("intent", "clarification_needed")
+        confidence = result.get("confidence", 0.0)
+        reasoning = result.get("reasoning", "")
+        
+        print(f"🎯 Intent Classification: {intent} (confidence: {confidence}) - {reasoning}")
+        
+        if intent == "evidence_discovery":
+            return {
+                "intent": "evidence_discovery",
+                "selected_server": "rag_server"
+            }
+        elif intent == "claim_generation":
+            return {
+                "intent": "claim_generation", 
+                "selected_server": "summary_server"
+            }
+        else:
+            # Clarification needed
+            clarification_message = """I'd be happy to help with your Boston Scientific marketing needs! 
+
+I can assist with:
+🔍 **Evidence Discovery** - Find research, data, and evidence to support your marketing claims
+📝 **Claim Generation** - Generate new marketing content and promotional materials
+
+Could you clarify whether you need me to:
+• Find evidence/data to support existing claims
+• Generate new marketing content for a product
+
+What would you like me to help you with?"""
+            
+            return {
+                "intent": "clarification_needed",
+                "messages": [AIMessage(content=clarification_message)]
+            }
+            
+    except Exception as e:
+        print(f"⚠️ Intent detection error: {e}")
+        return {
+            "intent": "clarification_needed",
+            "messages": [AIMessage(content="I'd be happy to help with your marketing needs! Could you please clarify what you're looking for?")]
         }
 
-# Evidence Discovery Node (simplified - only handles tool calling)
+# Evidence Discovery Node - Find evidence for claims
 def evidence_discovery_node(state: BeekeeperState) -> dict:
-    """🔍 Evidence Discovery: Create tool calls for RAG server"""
-    print("🔍 Evidence Discovery: Preparing to search for information...")
+    """🔍 Evidence Discovery: Create tool calls for evidence research"""
+    print("🔍 Evidence Discovery: Preparing to search for supporting evidence...")
     
     messages = state["messages"]
     if not messages:
@@ -216,14 +240,14 @@ def evidence_discovery_node(state: BeekeeperState) -> dict:
     }
     
     # Create AI message with tool call
-    ai_message = AIMessage(content="Searching for evidence...", tool_calls=[tool_call])
+    ai_message = AIMessage(content="Searching for evidence to support your marketing claims...", tool_calls=[tool_call])
     
     return {"messages": [ai_message]}
 
-# Claim Generation Node (simplified - only handles tool calling) 
+# Claim Generation Node - Generate marketing content
 def claim_generation_node(state: BeekeeperState) -> dict:
-    """📝 Claim Generation: Create tool calls for summarization server"""
-    print("📝 Claim Generation: Preparing to generate content...")
+    """📝 Claim Generation: Create tool calls for marketing content generation"""
+    print("📝 Claim Generation: Preparing to generate marketing content...")
     
     messages = state["messages"]
     if not messages:
@@ -239,10 +263,10 @@ def claim_generation_node(state: BeekeeperState) -> dict:
     if not user_query:
         return {"messages": []}
     
-    # Check if query contains product information for claim generation
+    # Check if query contains product information for marketing claims
     llm = ChatOpenAI(model=os.environ.get("OPENAI_MODEL", "gpt-4"))
     
-    product_detection_prompt = SystemMessage(content="""You are analyzing a user query to determine if it contains information about a specific product or topic for generating claims/summaries.
+    product_detection_prompt = SystemMessage(content="""You are analyzing a Boston Scientific marketing query to determine if it contains specific product information for generating marketing claims.
 
 Respond in JSON format:
 {
@@ -252,16 +276,16 @@ Respond in JSON format:
 }
 
 Look for:
-- Explicit product mentions ("claims about iPhone", "summary for Tesla Model 3")
-- Topic specifications ("generate claims for renewable energy", "summarize AI trends")
-- Subject matter ("create summary about blockchain technology")
+- Explicit product mentions ("claims for pacemaker", "marketing for cardiac stent") 
+- Medical device categories ("defibrillator marketing", "catheter claims")
+- Boston Scientific product lines ("generate content for our new device")
 
-If no specific product/topic is mentioned, set has_product to false.""")
+If no specific product/device is mentioned, set has_product to false.""")
     
     try:
         detection_response = llm.invoke([
             product_detection_prompt,
-            HumanMessage(content=f"Analyze this query for product/topic information: {user_query}")
+            HumanMessage(content=f"Analyze this Boston Scientific query for product information: {user_query}")
         ])
         
         detection_result = json.loads(detection_response.content.strip())
@@ -273,15 +297,15 @@ If no specific product/topic is mentioned, set has_product to false.""")
         
         if not has_product or confidence < 0.7:
             # Return clarification request
-            clarification_message = f"""📝 I'd be happy to generate claims or summaries for you! However, I need to know what specific product or topic you'd like me to focus on.
+            clarification_message = """I'd be happy to generate marketing claims for you! However, I need to know what specific Boston Scientific product or device you'd like me to focus on.
 
 For example, you could ask:
-• "Generate claims about the iPhone 15"
-• "Create a summary for Tesla's latest earnings"
-• "Write claims about renewable energy benefits"
-• "Summarize trends in artificial intelligence"
+• "Generate marketing claims for our new pacemaker"
+• "Create promotional content for cardiac stents"
+• "Develop marketing materials for defibrillator technology"
+• "Write claims about our catheter innovations"
 
-Could you please specify what product or topic you'd like me to generate content about?"""
+Could you please specify which Boston Scientific product or medical device you'd like marketing content for?"""
             
             return {
                 "intent": "clarification_needed",
@@ -291,9 +315,9 @@ Could you please specify what product or topic you'd like me to generate content
     except Exception as e:
         print(f"⚠️ Product detection error: {e}")
         # On error, ask for clarification
-        clarification_message = """📝 I'd be happy to help generate claims or summaries! Could you please specify what product or topic you'd like me to focus on?
+        clarification_message = """I'd be happy to help generate marketing claims! Could you please specify which Boston Scientific product or medical device you'd like me to focus on?
 
-For example: "Generate claims about [product name]" or "Create a summary for [topic]"."""
+For example: "Generate marketing claims for [product name]" or "Create content for [device type]"."""
         
         return {
             "intent": "clarification_needed", 
@@ -312,7 +336,7 @@ For example: "Generate claims about [product name]" or "Create a summary for [to
     }
     
     # Create AI message with tool call
-    ai_message = AIMessage(content="Generating content...", tool_calls=[tool_call])
+    ai_message = AIMessage(content="Generating marketing content for your Boston Scientific product...", tool_calls=[tool_call])
     
     return {"messages": [ai_message]}
 
@@ -378,17 +402,24 @@ async def call_mcp_tool(server_key: str, tool_name: str, tool_args: dict) -> str
             
             return error_msg
 
-# Conditional Routing Logic (updated for cleaner flow)
-def route_after_intent_detection(state: BeekeeperState) -> str:
-    """Route after intent detection based on intent and conversation state"""
-    intent = state.get("intent")
+def route_after_chat(state: BeekeeperState) -> str:
+    """Route after chat node based on conversation state"""
     conversation_complete = state.get("conversation_complete", False)
     
-    print(f"🔄 Routing after intent detection: intent={intent}, complete={conversation_complete}")
+    print(f"🔄 Routing after chat: complete={conversation_complete}")
     
     # If conversation is complete, end the flow
     if conversation_complete:
         return "END"
+    
+    # Otherwise, route to intent detection
+    return "intent_detection"
+
+def route_after_intent_detection(state: BeekeeperState) -> str:
+    """Route after intent detection based on intent"""
+    intent = state.get("intent")
+    
+    print(f"🔄 Routing after intent detection: intent={intent}")
     
     # Route based on detected intent
     if intent == "evidence_discovery":
@@ -397,7 +428,6 @@ def route_after_intent_detection(state: BeekeeperState) -> str:
         return "claim_generation"
     else:  # clarification_needed or unknown
         return "END"
-
 
 def route_after_evidence_discovery(state: BeekeeperState) -> str:
     """Route after evidence discovery - check if we need clarification or should call tools"""
@@ -414,7 +444,6 @@ def route_after_evidence_discovery(state: BeekeeperState) -> str:
     
     return "END"
 
-
 def route_after_claim_generation(state: BeekeeperState) -> str:
     """Route after claim generation - check if we need clarification or should call tools"""
     messages = state.get("messages", [])
@@ -430,15 +459,15 @@ def route_after_claim_generation(state: BeekeeperState) -> str:
     
     return "END"
 
-# Create the Beekeeper Agent Graph (simplified with standard ToolNode)
+# Create the  Agent Graph
 def create_beekeeper_agent():
-    """🏗️ Create the Beekeeper Agent with LangGraph streaming support"""
-    print("Creating Beekeeper Agent with LangGraph streaming support...")
+    print("Creating Agent with clean workflow...")
     
     # Create graph
     workflow = StateGraph(BeekeeperState)
     
     # Add nodes
+    workflow.add_node("chat", chat_node)
     workflow.add_node("intent_detection", intent_detection_node)
     workflow.add_node("evidence_discovery", evidence_discovery_node)
     workflow.add_node("claim_generation", claim_generation_node)
@@ -448,7 +477,17 @@ def create_beekeeper_agent():
     workflow.add_node("summary_tool", ToolNode([call_mcp_tool]))
     
     # Set entry point
-    workflow.set_entry_point("intent_detection")
+    workflow.set_entry_point("chat")
+    
+    # Add conditional routing from chat
+    workflow.add_conditional_edges(
+        "chat",
+        route_after_chat,
+        {
+            "intent_detection": "intent_detection",
+            "END": END
+        }
+    )
     
     # Add conditional routing from intent detection
     workflow.add_conditional_edges(
@@ -481,14 +520,14 @@ def create_beekeeper_agent():
         }
     )
     
-    # Add edges from tool nodes back to intent detection
-    workflow.add_edge("rag_tool", "intent_detection")
-    workflow.add_edge("summary_tool", "intent_detection")
+    # Add edges from tool nodes back to chat for conversational responses
+    workflow.add_edge("rag_tool", "chat")
+    workflow.add_edge("summary_tool", "chat")
     
     # Compile the graph
     app = workflow.compile()
     
-    print("Beekeeper Agent created successfully with LangGraph streaming support!")
+    print("Boston Scientific Marketing Agent created successfully!")
     return app
 
 async def process_query(user_query: str) -> dict:
@@ -572,43 +611,44 @@ async def test_server_connections():
                 print(f"{server_config['name']}: Connection failed")
 
 async def main():
-    """Interactive main function for testing Beekeeper business flow"""
-    print("Starting Beekeeper Agent with Intent Detection Business Flow...")
-    print("Architecture: Conversational Intent Detection → Business Logic → Tools → Conversational Response")
-    print("Simplified: Intent detection is conversational, business logic handles tool responses")
+    """Interactive main function for testing Boston Scientific Marketing workflow"""
+    print("Starting Boston Scientific Marketing Agent...")
+    print("Architecture: Chat → Intent Detection → Evidence Discovery OR Marketing Claims → Tools → Chat Response")
+    print("Specialized for Boston Scientific's marketing team workflows")
     
     # Test server connections
     await test_server_connections()
     
-    print(f"\nConversational Business Flow:")
-    print(f"• Intent Detection: conversational acknowledgment of what will be done")
-    print(f"• Evidence Discovery: tool call → conversational response to results")
-    print(f"• Claim Generation: tool call → conversational response to results")
+    print(f"\nBoston Scientific Marketing Workflow:")
+    print(f"• Chat: Handle user conversation and tool result responses")
+    print(f"• Intent Detection: Classify evidence_discovery vs claim_generation")
+    print(f"• Evidence Discovery: Find evidence to support marketing claims")
+    print(f"• Claim Generation: Generate new marketing content for products")
     print(f"• Generic MCP Tool: Single function handles all server/tool combinations")
-    print(f"• Natural Flow: Each step feels like talking to a helpful assistant")
+    print(f"• Professional Flow: Each step tailored for marketing team needs")
     
-    print("\nExample queries:")
-    print("• 'Find evidence about API performance' → Evidence Discovery → RAG ToolNode → Chat Response")
-    print("• 'Create a summary for Analytics Platform' → Claim Generation → Summary ToolNode → Chat Response")
-    print("• 'Generate a report about Customer Portal' → Claim Generation → Summary ToolNode → Chat Response")
-    print("• 'Write a summary of our CRM system' → Claim Generation → Summary ToolNode → Chat Response")
-    print("• 'Create a summary' (no product) → LLM detects missing product → Asks for clarification")
-    print("• 'Help me with the project' → Intent Detection provides clarification directly")
+    print("\nExample queries for Boston Scientific:")
+    print("• 'Find evidence for our pacemaker safety claims' → Evidence Discovery → RAG ToolNode → Chat Response")
+    print("• 'Generate marketing claims for new cardiac stent' → Claim Generation → Summary ToolNode → Chat Response")
+    print("• 'Research competitor analysis for defibrillators' → Evidence Discovery → RAG ToolNode → Chat Response")
+    print("• 'Create promotional content for catheter technology' → Claim Generation → Summary ToolNode → Chat Response")
+    print("• 'Generate claims' (no product specified) → LLM detects missing product → Asks for clarification")
+    print("• 'Help with marketing' → Intent Detection provides clarification with Boston Scientific context")
     print("• Type 'quit' to exit")
     print("-" * 80)
     
     try:
         while True:
-            user_input = input(f"\nYou: ").strip()
+            user_input = input(f"\nBoston Scientific Marketing Team: ").strip()
             if user_input.lower() in ['quit', 'exit', 'bye']:
                 break
                 
             if not user_input:
                 continue
             
-            print(f"\nBeekeeper: ", end="", flush=True)
+            print(f"\nMarketing Assistant: ", end="", flush=True)
             
-            # Process the query through business flow
+            # Process the query through Boston Scientific workflow
             result = await process_query(user_input)
             
             # Print the final response
