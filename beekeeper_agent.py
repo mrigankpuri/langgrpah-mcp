@@ -329,8 +329,8 @@ For example: "Generate marketing claims for [product name]" or "Create content f
         "name": "call_mcp_tool",
         "args": {
             "server_key": "summary_server",
-            "tool_name": "summarization_tool",
-            "tool_args": {"product": product_name or user_query}
+            "tool_name": "generate_medical_device_claims",
+            "tool_args": {"product_name": product_name or user_query}
         },
         "id": f"call_{uuid4()}"
     }
@@ -390,7 +390,7 @@ async def call_mcp_tool(server_key: str, tool_name: str, tool_args: dict) -> str
                 writer({"mcp_notification": f"Tool completed successfully", "type": "tool_complete"})
             
             # Just return the clean result
-            return tool_result
+                return tool_result
                 
         except Exception as e:
             print(f"Error details: {e}")

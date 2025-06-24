@@ -44,7 +44,7 @@ async def stream_beekeeper_response(query: str) -> AsyncGenerator[str, None]:
     try:
         # Create the Beekeeper agent
         from beekeeper_agent import create_beekeeper_agent
-        from langchain_core.messages import HumanMessage
+        from langchain_core.messages import HumanMessage, ToolMessage
         
         app_agent = create_beekeeper_agent()
         
@@ -74,14 +74,32 @@ async def stream_beekeeper_response(query: str) -> AsyncGenerator[str, None]:
                 node_name = list(chunk.keys())[0]
                 node_state = chunk[node_name]
                 
-                # Stream messages - only final responses
+                # Show node name
+                yield f"data: **{node_name.replace('_', ' ').title()}**\n\n"
+                
+                # Stream messages as they come
                 messages = node_state.get('messages', [])
                 if messages:
                     last_message = messages[-1]
                     
-                    # Message content - only show non-empty content
+                    # Show tool calls
+                    if hasattr(last_message, 'tool_calls') and last_message.tool_calls:
+                        for tool_call in last_message.tool_calls:
+                            tool_name = tool_call.get('name', 'unknown')
+                            tool_args = tool_call.get('args', {})
+                            yield f"data: **Calling tool:** {tool_name}\n\n"
+                            yield f"data: **Arguments:** {tool_args}\n\n"
+                    
+                    # Show message content
                     if hasattr(last_message, 'content') and last_message.content.strip():
                         yield f"data: {last_message.content}\n\n"
+                    
+                    # Show tool results
+                    if isinstance(last_message, ToolMessage):
+                        yield f"data: **Tool Result:**\n\n"
+                        content = last_message.content
+                        # Send content as-is since UI now handles large chunks properly
+                        yield f"data: {content}\n\n"
         
     except Exception as e:
         yield f"data: Error: {str(e)}\n\n"

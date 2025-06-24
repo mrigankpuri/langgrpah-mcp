@@ -4,6 +4,7 @@
 """
 import streamlit as st
 import requests
+import json
 
 # Configuration
 FASTAPI_URL = "http://localhost:8003"
@@ -16,7 +17,8 @@ st.set_page_config(
 )
 
 # Simple header
-st.title("Beekeeper Agent")
+st.title("🐝 Beekeeper Agent")
+st.markdown("Ask me anything - I'll automatically detect if you need evidence discovery or content generation.")
 
 # Query Input
 user_query = st.text_input("Your question:")
@@ -33,24 +35,30 @@ if st.button("Send") and user_query.strip():
             )
             
             if response.status_code == 200:
-                # Use a single placeholder that gets updated
+                # Use a single placeholder for all content
                 response_placeholder = st.empty()
                 all_content = []
                 
-                for line in response.iter_lines(decode_unicode=True):
-                    if line.startswith("data: "):
-                        data_str = line[6:].strip()
-                        
-                        if data_str == "[DONE]":
+                # Fix SSE parsing with larger chunk_size to handle big "data:" lines
+                for raw in response.iter_lines(decode_unicode=True, chunk_size=2048):
+                    if not raw:
+                        all_content.append("")  # blank line → paragraph break
+                    else:
+                        # Strip off "data:" if present, otherwise keep it
+                        piece = raw.removeprefix("data: ").strip()
+                        if piece == "[DONE]":
                             break
-                        
-                        if data_str and not data_str.startswith("Error:"):
-                            all_content.append(data_str)
-                            
-                            # Update the single placeholder with all content
-                            full_text = "\n\n".join(all_content)
-                            response_placeholder.text(full_text)
-                            
+                        if piece and not piece.startswith("Error:"):
+                            all_content.append(piece)
+                    
+                    # Update display with scrollable text area instead of code
+                    full_text = "\n".join(all_content)
+                    response_placeholder.text_area(
+                        "Response",
+                        full_text,
+                        height=400,
+                        max_chars=None
+                    )
             else:
                 st.error(f"Error: {response.status_code}")
                 
@@ -60,5 +68,5 @@ if st.button("Send") and user_query.strip():
 # Simple examples
 st.markdown("---")
 st.markdown("**Examples:**")
-st.markdown("• *Evidence:* Find information about API performance")  
-st.markdown("• *Summary:* Create a report for our analytics platform") 
+st.markdown("• **Evidence:** Find information about API performance")  
+st.markdown("• **Summary:** Create a report for our analytics platform") 
